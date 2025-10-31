@@ -3,23 +3,28 @@ import sys
 import os
 
 ASCII_CODE = ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", " "]
+WEIGHTS = [0.42, 0.11, 0.47]
 
-def image_to_ascii(img_path, width=80, scale=0.55, invert=False):
+def rgb_to_weighted_luminance(r, g, b, r_w=0.33, g_w=0.33, b_w=0.33):
+    """
+    計算 RGB 加權亮度
+    """
+    return r * r_w + g * g_w + b * b_w
+
+def image_to_ascii(img_path, width=80, scale=0.55, invert=False,r_w=0.33, g_w=0.33, b_w=0.33):
     """
     參數:
       img_path: 圖片檔路徑
       width: 輸出列寬（字元數）
       scale: 縮放（字元通常比寬窄）
       invert: 是否反相（亮/暗互換）
+      r_w, g_w, b_w: RGB 權重
     回傳: ASCII 字串（包含換行）
     """
     if not os.path.exists(img_path):
         raise FileNotFoundError(f"找不到檔案: {img_path}")
 
-    img = Image.open(img_path)
-    # 灰階
-    img = img.convert("L")
-
+    img = Image.open(img_path).convert("RGB")
     orig_w, orig_h = img.size
     new_w = int(width)
     new_h = max(1, int((orig_h / orig_w) * new_w * scale))
@@ -28,16 +33,17 @@ def image_to_ascii(img_path, width=80, scale=0.55, invert=False):
     pixels = img.load()
     h = img.height
     w = img.width
-    buckets = len(ASCII_CODE) - 1 
+    buckets = len(ASCII_CODE) - 1
 
     lines = []
     for y in range(h):
         line_chars = []
         for x in range(w):
-            p = pixels[x, y]  # 0..255
+            r, g, b = pixels[x, y]
+            lum = rgb_to_weighted_luminance(r, g, b, r_w, g_w, b_w)
             if invert:
-                p = 255 - p
-            idx = (p * buckets) // 255
+                lum = 255 - lum
+            idx = int(lum * buckets / 255)
             line_chars.append(ASCII_CODE[idx])
         lines.append("".join(line_chars))
     return "\n".join(lines)
@@ -73,7 +79,7 @@ def main():
             return
         i += 1
 
-    ascii_art = image_to_ascii(img_path, width=width, invert=invert)
+    ascii_art = image_to_ascii(img_path, width=width, invert=invert, r_w=WEIGHTS[0], g_w=WEIGHTS[1], b_w=WEIGHTS[2])
     if out_file:
         with open(out_file, "w", encoding="utf-8") as f:
             f.write(ascii_art)
