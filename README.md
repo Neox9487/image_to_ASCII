@@ -1,5 +1,5 @@
 # 使用方法
-```
+```bash
 python ascii_art.py <image_path> [width] [--invert] [--out output.txt]
 ```
 
