@@ -6,7 +6,7 @@ import subprocess
 from PIL import Image
 
 ASCII_CODE = ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", " "]
-WEIGHTS = [0.42, 0.11, 0.47]
+WEIGHTS = [0.33, 0.33, 0.33]
 
 
 def rgb_to_weighted_luminance(r, g, b, r_w=0.33, g_w=0.33, b_w=0.33):
