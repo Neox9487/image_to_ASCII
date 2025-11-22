@@ -2,103 +2,115 @@ import cv2
 import os
 import sys
 import time
-import subprocess
+import pygame
 from PIL import Image
 
 ASCII_CODE = ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", " "]
-WEIGHTS = [0.33, 0.33, 0.33] # r, g, b weights
+WEIGHTS = [0.33, 0.33, 0.33]
 
-def rgb_to_weighted_luminance(r, g, b, r_w, g_w, b_w):
+def rgb_to_weighted_luminance(r, g, b, r_w=0.33, g_w=0.33, b_w=0.33):
     return r * r_w + g * g_w + b * b_w
 
-def frame_to_ascii(frame, width, scale, invert, r_w, g_w, b_w):
+def frame_to_ascii(frame, width=80, scale=0.55, invert=False,
+                   r_w=0.33, g_w=0.33, b_w=0.33):
     img = Image.fromarray(frame).convert("RGB")
-    ow, oh = img.size
-    nw = width
-    nh = max(1, int((oh / ow) * nw * scale))
-    img = img.resize((nw, nh))
-    px = img.load()
+    orig_w, orig_h = img.size
+    new_w = int(width)
+    new_h = max(1, int((orig_h / orig_w) * new_w * scale))
+    img = img.resize((new_w, new_h))
+    pixels = img.load()
     h = img.height
     w = img.width
     buckets = len(ASCII_CODE) - 1
     lines = []
     for y in range(h):
-        row = []
+        line_chars = []
         for x in range(w):
-            r, g, b = px[x, y]
+            r, g, b = pixels[x, y]
             lum = rgb_to_weighted_luminance(r, g, b, r_w, g_w, b_w)
             if invert:
                 lum = 255 - lum
-            row.append(ASCII_CODE[int(lum * buckets / 255)])
-        lines.append("".join(row))
+            idx = int(lum * buckets / 255)
+            line_chars.append(ASCII_CODE[idx])
+        lines.append("".join(line_chars))
     return "\n".join(lines)
 
 def extract_audio(video_path):
     audio_tmp = "_tmp_audio.wav"
-    os.system(f'ffmpeg -y -i "{video_path}" -vn -ac 2 -ar 44100 "{audio_tmp}" > /dev/null 2>&1')
+    cmd = f'ffmpeg -y -i "{video_path}" -vn -ac 2 -ar 44100 "{audio_tmp}" > /dev/null 2>&1'
+    os.system(cmd)
     return audio_tmp
 
 def play_video_ascii(video_path, width=80, invert=False):
-    audio = extract_audio(video_path)
-    if not os.path.exists(audio):
-        print("audio extract failed, please check if video: "+ video_path+ "realy existed?")
+    if not os.path.exists(video_path):
+        print("Video not found:", video_path)
         return
 
-    audio_proc = subprocess.Popen(
-        ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audio]
-    )
+    audio_file = extract_audio(video_path)
+    if not os.path.exists(audio_file):
+        print("Audio extraction failed.")
+        return
 
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
     if fps <= 0:
         fps = 30
-
     frame_time = 1.0 / fps
-    frames = []
 
+    frames = []
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame)
     cap.release()
 
-    t0 = time.time()
+    pygame.mixer.init()
+    pygame.mixer.music.load(audio_file)
+    pygame.mixer.music.play()
 
     try:
-        for i, f in enumerate(frames):
-            t_target = i * frame_time
-            while (time.time() - t0) < t_target:
-                pass
-            ascii_f = frame_to_ascii(
-                f, width, 0.55, invert,
-                WEIGHTS[0], WEIGHTS[1], WEIGHTS[2]
+        while True:
+            audio_pos = pygame.mixer.music.get_pos() / 1000.0
+            frame_index = int(audio_pos / frame_time)
+            if frame_index >= len(frames):
+                break
+            ascii_frame = frame_to_ascii(
+                frames[frame_index],
+                width=width,
+                invert=invert,
+                r_w=WEIGHTS[0],
+                g_w=WEIGHTS[1],
+                b_w=WEIGHTS[2]
             )
             os.system("clear")
-            print(ascii_f)
+            print(ascii_frame)
+            time.sleep(0.001)
     except KeyboardInterrupt:
         pass
 
-    audio_proc.terminate()
-    if os.path.exists(audio):
-        os.remove(audio)
+    pygame.mixer.music.stop()
+    if os.path.exists("_tmp_audio.wav"):
+        os.remove("_tmp_audio.wav")
 
 def main():
     if len(sys.argv) < 2:
-        print("usage: python video_ascii_player.py <video.mp4> [width] [--invert]")
+        print("Usage: python video_ascii_sync.py <video.mp4> [width] [--invert]")
         return
 
     video_path = sys.argv[1]
     width = 80
     invert = False
 
-    for a in sys.argv[2:]:
+    args = sys.argv[2:]
+    for a in args:
         if a.isdigit():
             width = int(a)
         elif a == "--invert":
             invert = True
 
-    play_video_ascii(video_path, width, invert)
+    play_video_ascii(video_path, width=width, invert=invert)
 
 if __name__ == "__main__":
     main()
