@@ -13,12 +13,13 @@ python ascii_art.py <image_path> [width] [--invert] [--out output.txt]
 
 ## Video player
 ```bash
-python video_ascii_player.py <video_path> [width] [--invert]
+python ascii_to_mp4.py <input.mp4> <output.mp4 > [width] [--invert]
 ```
 
 | 參數                   | 說明                                   |
 | -------------------- | ------------------------------------ |
-| `<video_path>`       | 影片路徑（支援 `mp4`）                       |
+| `<input.mp4>`       | 要轉化的影片                    |
+| `<output.mp4>`       | 輸出影片檔案名                    |
 | `[width]`            | ASCII 輸出寬度（預設 `80`）                  |
 | `--invert`           | 反相顯示（亮 ~ 暗）                          |
 
