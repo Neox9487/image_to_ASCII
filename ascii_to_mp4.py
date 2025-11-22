@@ -104,7 +104,7 @@ def ascii_video_to_mp4(video_path, output_path, width=100, invert=False):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python video_to_mp4.py input.mp4 output.mp4 [width] [--invert]")
+        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert]")
         return
 
     video = sys.argv[1]
