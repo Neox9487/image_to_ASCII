@@ -96,7 +96,7 @@ def play_video_ascii(video_path, width=80, invert=False):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python video_ascii_sync.py <video.mp4> [width] [--invert]")
+        print("Usage: python video_ascii_player.py <video.mp4> [width] [--invert]")
         return
 
     video_path = sys.argv[1]
