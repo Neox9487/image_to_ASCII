@@ -41,7 +41,7 @@ def extract_audio(video_path):
 def play_video_ascii(video_path, width=80, invert=False):
     audio = extract_audio(video_path)
     if not os.path.exists(audio):
-        print("audio extract failed")
+        print("audio extract failed, please check if video: "+ video_path+ "realy existed?")
         return
 
     audio_proc = subprocess.Popen(
