@@ -1,7 +1,6 @@
 import cv2
 import os
 import sys
-import time
 import numpy as np
 from PIL import ImageFont, Image, ImageDraw
 from concurrent.futures import ProcessPoolExecutor, as_completed
