@@ -1,4 +1,4 @@
-# 使用方法
+# Usage
 ## Image transfer
 ```bash
 python ascii_art.py <image_path> [width] [--invert] [--out output.txt]
