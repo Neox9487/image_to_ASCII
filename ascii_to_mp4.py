@@ -98,16 +98,19 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
         elapsed = time.time() - start
         eta = (elapsed / percent - elapsed) if percent > 0 else 0
 
-        print(f"\r[{bar}] {percent*100:5.1f}%  {frame_id}/{total}  "
-              f"Elapsed: {elapsed:5.1f}s  ETA: {eta:5.1f}s",
-              end="")
+        print(
+            f"\r[{bar}] {percent*100:5.1f}%  {frame_id}/{total}  "
+            f"Elapsed: {elapsed:5.1f}s  ETA: {eta:5.1f}s",
+            end=""
+        )
 
     cap.release()
-    print("\nEncoding MP4...")
+    print("\nEncoding MP4 (with sound)...")
 
     os.system(
         f'ffmpeg -y -framerate {fps} -i "{tmp}/%05d.png" '
-        f'-vcodec libx264 -pix_fmt yuv420p "{output_path}"'
+        f'-i "{video_path}" -map 0:v -map 1:a? '
+        f'-vcodec libx264 -pix_fmt yuv420p -shortest "{output_path}"'
     )
 
     for f in os.listdir(tmp):
@@ -138,4 +141,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
