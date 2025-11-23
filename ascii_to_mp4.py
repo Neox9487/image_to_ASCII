@@ -4,9 +4,13 @@ import sys
 import time
 import numpy as np
 from PIL import ImageFont, Image, ImageDraw
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm 
+
+# ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", " "]
 
 ASCII = np.array(list("@#S%?*+;:, "))
-WEIGHTS = np.array([0.33, 0.33, 0.33])
+WEIGHTS = np.array([0.33, 0.33, 0.33])  # r, g, b weights
 
 def find_mono_font():
     fonts = [
@@ -22,11 +26,9 @@ def find_mono_font():
 
 FONT_PATH = find_mono_font()
 FONT = ImageFont.truetype(FONT_PATH, 14)
-
 ascent, descent = FONT.getmetrics()
-CH = ascent + descent             
-CW = int(FONT.getlength("A"))       
-
+CH = ascent + descent
+CW = int(FONT.getlength("A"))
 
 def frame_to_ascii(frame, ascii_width, invert):
     H, W, _ = frame.shape
@@ -39,9 +41,8 @@ def frame_to_ascii(frame, ascii_width, invert):
     if invert:
         lum = 255 - lum
 
-    idx = (lum * (len(ASCII)-1) / 255).astype(np.uint8)
+    idx = (lum * (len(ASCII) - 1) / 255).astype(np.uint8)
     return ASCII[idx]
-
 
 def ascii_to_image(ascii_img):
     h, w = ascii_img.shape
@@ -65,51 +66,55 @@ def ascii_to_image(ascii_img):
 
     return np_img
 
+def process_one_frame(args):
+    frame_id, frame, ascii_width, invert, tmp = args
+
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    ascii_img = frame_to_ascii(frame, ascii_width, invert)
+    out_img = ascii_to_image(ascii_img)
+
+    out_path = f"{tmp}/{frame_id:05d}.png"
+    cv2.imwrite(out_path, out_img)
+
+    return frame_id
 
 def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    print("Converting frames...")
+    print(f"Total frames = {total}")
+    print(f"FPS = {fps}")
+    print("Preparing for converting...")
 
-    tmp = "_ascii_frames"
-    os.makedirs(tmp, exist_ok=True)
-
-    start = time.time()
-    frame_id = 0
-
-    while True:
+    frames = []
+    for i in tqdm(range(total), desc="Loading frames"):
         ret, frame = cap.read()
         if not ret:
             break
-
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        ascii_img = frame_to_ascii(frame, ascii_width, invert)
-        out_img = ascii_to_image(ascii_img)
-
-        cv2.imwrite(f"{tmp}/{frame_id:05d}.png", out_img)
-
-        frame_id += 1
-
-        percent = frame_id / total
-        bar = "#" * int(percent * 30)
-        bar = bar.ljust(30, "-")
-        elapsed = time.time() - start
-        eta = (elapsed / percent - elapsed) if percent > 0 else 0
-
-        print(
-            f"\r[{bar}] {percent*100:5.1f}%  {frame_id}/{total}  "
-            f"Elapsed: {elapsed:5.1f}s  ETA: {eta:5.1f}s",
-            end=""
-        )
+        frames.append((i, frame))
 
     cap.release()
-    print("\nEncoding MP4 (with sound)...")
+
+    print("Processing frames...")
+    tmp = "_ascii_frames"
+    os.makedirs(tmp, exist_ok=True)
+
+    job_args = [(i, frame, ascii_width, invert, tmp) for i, frame in frames]
+
+    with ProcessPoolExecutor(max_workers=os.cpu_count()) as exe:
+        results = list(tqdm(
+            exe.map(process_one_frame, job_args),
+            total=len(job_args),
+            desc="Rendering ASCII"
+        ))
+
+    print("Encoding MP4...")
 
     os.system(
-        f'ffmpeg -y -framerate {fps} -i "{tmp}/%05d.png" '
-        f'-i "{video_path}" -map 0:v -map 1:a? '
+        f'ffmpeg -y -thread_queue_size 1024 -framerate {fps} -i "{tmp}/%05d.png" '
+        f'-thread_queue_size 1024 -i "{video_path}" '
+        f'-map 0:v -map 1:a? '
         f'-vcodec libx264 -pix_fmt yuv420p -shortest "{output_path}"'
     )
 
@@ -118,7 +123,6 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
     os.rmdir(tmp)
 
     print("Done:", output_path)
-
 
 def main():
     if len(sys.argv) < 3:
@@ -141,4 +145,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.set_start_method("spawn", force=True)
     main()
