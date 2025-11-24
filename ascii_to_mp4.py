@@ -2,8 +2,8 @@ import cv2
 import os
 import sys
 import numpy as np
+import subprocess
 from PIL import ImageFont, Image, ImageDraw
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm 
 
 # ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", " "]
@@ -29,6 +29,15 @@ ascent, descent = FONT.getmetrics()
 CH = ascent + descent
 CW = int(FONT.getlength("A"))
 
+CHAR_CACHE = {}
+
+for ch in ASCII:
+    ch = str(ch)
+    img = Image.new("L", (CW, CH), 0)
+    d = ImageDraw.Draw(img)
+    d.text((0, 0), ch, font=FONT, fill=255)
+    CHAR_CACHE[ch] = np.array(img, dtype=np.uint8)
+
 def frame_to_ascii(frame, ascii_width, invert):
     H, W, _ = frame.shape
     aspect = H / W
@@ -49,36 +58,31 @@ def ascii_to_image(ascii_img):
     out_w = w * CW
     out_h = h * CH
 
-    img = Image.new("RGB", (out_w, out_h), (0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    out = np.zeros((out_h, out_w), dtype=np.uint8)
 
-    for i, row in enumerate(ascii_img):
-        draw.text((0, i * CH), "".join(row), font=FONT, fill=(255, 255, 255))
+    for i in range(h):
+        row = ascii_img[i]
+        y0 = i * CH
+        for j in range(w):
+            char = row[j]
+            x0 = j * CW
+            out[y0:y0+CH, x0:x0+CW] = CHAR_CACHE[char]
 
-    np_img = np.array(img)
+    rgb = np.stack([out, out, out], axis=2)
 
-    H, W, _ = np_img.shape
-    if W % 2 == 1:
-        np_img = np_img[:, :-1]
-    if H % 2 == 1:
-        np_img = np_img[:-1, :]
+    if rgb.shape[1] % 2 == 1:
+        rgb = rgb[:, :-1]
+    if rgb.shape[0] % 2 == 1:
+        rgb = rgb[:-1, :]
 
-    return np_img
-
-def process_one_frame(args):
-    frame_id, frame, ascii_width, invert, tmp = args
-
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    ascii_img = frame_to_ascii(frame, ascii_width, invert)
-    out_img = ascii_to_image(ascii_img)
-
-    out_path = f"{tmp}/{frame_id:05d}.png"
-    cv2.imwrite(out_path, out_img)
-
-    return frame_id
+    return rgb
 
 def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
     cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"Failed to open video: {video_path}")
+        return
+
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -86,40 +90,71 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
     print(f"FPS = {fps}")
     print("Preparing for converting...")
 
-    frames = []
-    for i in tqdm(range(total), desc="Loading frames"):
+    ret, frame = cap.read()
+    if not ret:
+        print("Failed to read first frame.")
+        cap.release()
+        return
+
+    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    ascii_img = frame_to_ascii(frame, ascii_width, invert)
+    out_img = ascii_to_image(ascii_img)
+    out_h, out_w, _ = out_img.shape
+
+    print(f"ASCII frame size = {out_w}x{out_h}")
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "rawvideo",
+        "-pix_fmt", "rgb24",
+        "-s", f"{out_w}x{out_h}",
+        "-r", str(fps),
+        "-i", "-",
+        "-i", video_path,
+        "-map", "0:v",
+        "-map", "1:a?",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-shortest",
+        output_path,
+    ]
+
+    proc = subprocess.Popen(
+        ffmpeg_cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+
+    pbar = tqdm(total=total if total > 0 else None, desc="Rendering ASCII", leave=False, dynamic_ncols=True)
+    processed = 0
+
+    while True:
         ret, frame = cap.read()
         if not ret:
             break
-        frames.append((i, frame))
 
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        ascii_img = frame_to_ascii(frame, ascii_width, invert)
+        out_img = ascii_to_image(ascii_img)
+
+        if out_img.shape[0] != out_h or out_img.shape[1] != out_w:
+            out_img = cv2.resize(out_img, (out_w, out_h))
+
+        proc.stdin.write(out_img.tobytes())
+
+        processed += 1
+        if total > 0:
+            pbar.update(1)
+
+    pbar.close()
     cap.release()
 
-    print("Processing frames...")
-    tmp = "_ascii_frames"
-    os.makedirs(tmp, exist_ok=True)
-
-    job_args = [(i, frame, ascii_width, invert, tmp) for i, frame in frames]
-
-    with ProcessPoolExecutor(max_workers=os.cpu_count()) as exe:
-        results = list(tqdm(
-            exe.map(process_one_frame, job_args),
-            total=len(job_args),
-            desc="Rendering ASCII"
-        ))
-
-    print("Encoding MP4...")
-
-    os.system(
-        f'ffmpeg -y -thread_queue_size 1024 -framerate {fps} -i "{tmp}/%05d.png" '
-        f'-thread_queue_size 1024 -i "{video_path}" '
-        f'-map 0:v -map 1:a? '
-        f'-vcodec libx264 -pix_fmt yuv420p -shortest "{output_path}"'
-    )
-
-    for f in os.listdir(tmp):
-        os.remove(os.path.join(tmp, f))
-    os.rmdir(tmp)
+    proc.stdin.close()
+    proc.wait()
 
     print("Done:", output_path)
 
@@ -142,8 +177,5 @@ def main():
 
     ascii_video_to_mp4(video, output, ascii_width, invert)
 
-
 if __name__ == "__main__":
-    import multiprocessing
-    multiprocessing.set_start_method("spawn", force=True)
     main()
