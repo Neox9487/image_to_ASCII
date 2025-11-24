@@ -8,10 +8,13 @@ from tqdm import tqdm
 
 # ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", " "]
 
+# === ASCII code ===
 ASCII = np.array(list("@#S%?*+;:, "))
 WEIGHTS = np.array([0.33, 0.33, 0.33])  # r, g, b weights
 
+# === fonts ===
 def find_mono_font():
+    """find available fonts"""
     fonts = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
@@ -38,7 +41,9 @@ for ch in ASCII:
     d.text((0, 0), ch, font=FONT, fill=255)
     CHAR_CACHE[ch] = np.array(img, dtype=np.uint8)
 
+# === transitions ===
 def frame_to_ascii(frame, ascii_width, invert):
+    """transfer frame to ASCII"""
     H, W, _ = frame.shape
     aspect = H / W
     ascii_height = int(ascii_width * aspect * (CW / CH))
@@ -53,6 +58,7 @@ def frame_to_ascii(frame, ascii_width, invert):
     return ASCII[idx]
 
 def ascii_to_image(ascii_img):
+    """transfer ASCII to image"""
     h, w = ascii_img.shape
 
     out_w = w * CW
@@ -78,6 +84,7 @@ def ascii_to_image(ascii_img):
     return rgb
 
 def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
+    """transfer video to ASCII mp4"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"Failed to open video: {video_path}")
@@ -158,9 +165,10 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
 
     print("Done:", output_path)
 
+# === main ===
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert]")
+        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--use-cuda]")
         return
 
     video = sys.argv[1]
@@ -174,6 +182,8 @@ def main():
             ascii_width = int(a)
         elif a == "--invert":
             invert = True
+        elif a == "--use-cuda":
+            pass
 
     ascii_video_to_mp4(video, output, ascii_width, invert)
 
