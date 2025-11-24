@@ -11,9 +11,9 @@ python ascii_art.py <image_path> [width] [--invert] [--out output.txt]
 | `--invert`           | Invert brightness (light ↔ dark)                       |
 | `--out <output.txt>` | Save the ASCII result to a specified text file         |
 
-## Video player
+## Video transfer
 ```bash
-python ascii_to_mp4.py <input.mp4> <output.mp4 > [width] [--invert]
+python ascii_to_mp4.py <input.mp4> <output.mp4> [width] [--invert]
 ```
 
 | Parameter      | Description                        |
