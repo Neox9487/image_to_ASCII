@@ -189,7 +189,7 @@ def main():
     global CUDA_AVAILABLE
 
     if len(sys.argv) < 3:
-        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--use-cuda]")
+        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--no-cuda]")
         return
 
     video = sys.argv[1]
@@ -197,23 +197,29 @@ def main():
 
     ascii_width = 100
     invert = False
-    want_cuda = False
+    no_cuda = False
 
     for a in sys.argv[3:]:
         if a.isdigit():
             ascii_width = int(a)
         elif a == "--invert":
             invert = True
-        elif a == "--use-cuda":
-            want_cuda = True
+        elif a == "--no-cuda":
+            no_cuda = True
+        else:
+            print("Unknown parameter: ", a)
+            print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--no-cuda]")
+            exit()
 
-    if want_cuda:
+
+    if no_cuda:
+        CUDA_AVAILABLE = False
+        print("Using CPU for ASCII conversion.")
+    else:
         if CUDA_AVAILABLE:
             print("Using CUDA for ASCII conversion.")
         else:
-            print("CUDA requested but not available. Use CPU conversion instead...")
-    else:
-        CUDA_AVAILABLE = False
+            print("CUDA not available. Use CPU conversion instead...")
 
     ascii_video_to_mp4(video, output, ascii_width, invert)
 
