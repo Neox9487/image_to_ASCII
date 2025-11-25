@@ -2,3 +2,5 @@ Pillow
 opencv-python
 numpy
 tqdm
+# for cuda
+cupy

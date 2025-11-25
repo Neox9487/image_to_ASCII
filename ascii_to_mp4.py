@@ -6,13 +6,22 @@ import subprocess
 from PIL import ImageFont, Image, ImageDraw
 from tqdm import tqdm 
 
-# ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", " "]
+# === CUDA ===
+CUDA_AVAILABLE = False
+try:
+    import cupy as cp
+    if cp.is_available():
+        CUDA_AVAILABLE = True
+except:
+    CUDA_AVAILABLE = False
+print("CUDA available:", CUDA_AVAILABLE)
 
 # === ASCII code ===
-ASCII = np.array(list("@#S%?*+;:, "))
+# ["@", "#", "S", "%", "?", "*", "+", ";", ":", ",", " "]
+
+ASCII = np.frombuffer(b"@#S%?*+;:, ", dtype=np.uint8)
 WEIGHTS = np.array([0.33, 0.33, 0.33])  # r, g, b weights
 
-# === fonts ===
 def find_mono_font():
     """find available fonts"""
     fonts = [
@@ -35,27 +44,37 @@ CW = int(FONT.getlength("A"))
 CHAR_CACHE = {}
 
 for ch in ASCII:
-    ch = str(ch)
+    c = chr(ch) 
     img = Image.new("L", (CW, CH), 0)
     d = ImageDraw.Draw(img)
-    d.text((0, 0), ch, font=FONT, fill=255)
+    d.text((0, 0), c, font=FONT, fill=255)
     CHAR_CACHE[ch] = np.array(img, dtype=np.uint8)
 
 # === transitions ===
 def frame_to_ascii(frame, ascii_width, invert):
-    """transfer frame to ASCII"""
     H, W, _ = frame.shape
     aspect = H / W
     ascii_height = int(ascii_width * aspect * (CW / CH))
 
     small = cv2.resize(frame, (ascii_width, ascii_height))
-    lum = (small * WEIGHTS).sum(axis=2)
 
-    if invert:
-        lum = 255 - lum
+    if CUDA_AVAILABLE:
+        small_gpu = cp.asarray(small, dtype=cp.float32)
+        lum = (small_gpu * cp.array(WEIGHTS)).sum(axis=2)
+        if invert:
+            lum = 255 - lum
 
-    idx = (lum * (len(ASCII) - 1) / 255).astype(np.uint8)
-    return ASCII[idx]
+        idx = (lum * (len(ASCII) - 1) / 255).astype(cp.uint8)
+        ascii_img = ASCII[idx.get()] 
+        return ascii_img
+    else:
+        lum = (small * WEIGHTS).sum(axis=2)
+
+        if invert:
+            lum = 255 - lum
+
+        idx = (lum * (len(ASCII) - 1) / 255).astype(np.uint8)
+        return ASCII[idx]
 
 def ascii_to_image(ascii_img):
     """transfer ASCII to image"""
@@ -136,7 +155,7 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
         stderr=subprocess.DEVNULL
     )
 
-    pbar = tqdm(total=total if total > 0 else None, desc="Rendering ASCII", leave=False, dynamic_ncols=True)
+    pbar = tqdm(total=total or None, desc="Rendering ASCII", dynamic_ncols=True)
     processed = 0
 
     while True:
@@ -167,6 +186,8 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
 
 # === main ===
 def main():
+    global CUDA_AVAILABLE
+
     if len(sys.argv) < 3:
         print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--use-cuda]")
         return
@@ -176,6 +197,7 @@ def main():
 
     ascii_width = 100
     invert = False
+    want_cuda = False
 
     for a in sys.argv[3:]:
         if a.isdigit():
@@ -183,9 +205,18 @@ def main():
         elif a == "--invert":
             invert = True
         elif a == "--use-cuda":
-            pass
+            want_cuda = True
+
+    if want_cuda:
+        if CUDA_AVAILABLE:
+            print("Using CUDA for ASCII conversion.")
+        else:
+            print("CUDA requested but not available. Use CPU conversion instead...")
+    else:
+        CUDA_AVAILABLE = False
 
     ascii_video_to_mp4(video, output, ascii_width, invert)
+
 
 if __name__ == "__main__":
     main()
