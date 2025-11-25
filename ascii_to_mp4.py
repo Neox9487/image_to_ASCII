@@ -207,7 +207,7 @@ def main():
         elif a == "--no-cuda":
             no_cuda = True
         else:
-            print("Unknown parameter: ", a)
+            print("Unknown argument: ", a)
             print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--no-cuda]")
             exit()
 
