@@ -9,18 +9,29 @@ from tqdm import tqdm
 
 # === CUDA ===
 CUDA_AVAILABLE = False
+CUDA_LOGGING = ""
 cp = None
+
 try:
     import cupy as _cp
-    if _cp.is_available():
-        cp = _cp
-        CUDA_AVAILABLE = True
-except:
+except Exception as e:
+    CUDA_LOGGING = f"cupy import failed: {e}"
     CUDA_AVAILABLE = False
-
-FORCE_CPU = False
+else:
+    try:
+        if _cp.is_available():
+            cp = _cp
+            CUDA_AVAILABLE = True
+        else:
+            CUDA_LOGGING = "cupy imported but CUDA backend not available (driver/GPU missing)"
+            CUDA_AVAILABLE = False
+    except Exception as e:
+        CUDA_LOGGING = f"cupy CUDA check failed: {e}"
+        CUDA_AVAILABLE = False
 
 print("CUDA available:", CUDA_AVAILABLE)
+if not CUDA_AVAILABLE:
+    print("Fallback to CPU:", CUDA_LOGGING)
 
 # === ASCII codes ===
 ASCII = np.frombuffer(b"@#S%?*+;:, ", dtype=np.uint8)
