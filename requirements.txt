@@ -3,4 +3,4 @@ opencv-python
 numpy
 tqdm
 # for cuda
-cupy
+cupy-cuda12x

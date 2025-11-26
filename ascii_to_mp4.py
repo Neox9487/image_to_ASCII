@@ -3,17 +3,23 @@ import os
 import sys
 import numpy as np
 import subprocess
-from cupyx.scipy.ndimage import zoom
+import platform
 from PIL import ImageFont, Image, ImageDraw
 from tqdm import tqdm
+
+# === Detect OS ===
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
 
 # === CUDA ===
 CUDA_AVAILABLE = False
 CUDA_LOGGING = ""
 cp = None
+FORCE_CPU = False
 
 try:
     import cupy as _cp
+    from cupyx.scipy.ndimage import zoom
 except Exception as e:
     CUDA_LOGGING = f"cupy import failed: {e}"
     CUDA_AVAILABLE = False
@@ -23,7 +29,7 @@ else:
             cp = _cp
             CUDA_AVAILABLE = True
         else:
-            CUDA_LOGGING = "cupy imported but CUDA backend not available (driver/GPU missing)"
+            CUDA_LOGGING = "cupy imported but CUDA backend not available"
             CUDA_AVAILABLE = False
     except Exception as e:
         CUDA_LOGGING = f"cupy CUDA check failed: {e}"
@@ -33,20 +39,30 @@ print("CUDA available:", CUDA_AVAILABLE)
 if not CUDA_AVAILABLE:
     print("Fallback to CPU:", CUDA_LOGGING)
 
-# === ASCII codes ===
-ASCII = np.frombuffer(b"@#S%?*+;:, ", dtype=np.uint8)
-NCH = len(ASCII)
-WEIGHTS = np.array([0.33, 0.33, 0.33], dtype=np.float32)
 
+# === Monospace font search ===
 def find_mono_font():
-    fonts = [
+    linux_fonts = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
         "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
     ]
-    for f in fonts:
-        if os.path.exists(f):
-            return f
+    win_fonts = [
+        "C:/Windows/Fonts/consola.ttf", 
+        "C:/Windows/Fonts/lucon.ttf",  
+        "C:/Windows/Fonts/cour.ttf",
+    ]
+
+    if IS_LINUX:
+        for f in linux_fonts:
+            if os.path.exists(f):
+                return f
+
+    if IS_WINDOWS:
+        for f in win_fonts:
+            if os.path.exists(f):
+                return f
+
     print("No monospace font found.")
     sys.exit(1)
 
@@ -55,6 +71,11 @@ FONT = ImageFont.truetype(FONT_PATH, 14)
 asc, desc = FONT.getmetrics()
 CH = asc + desc
 CW = int(FONT.getlength("A"))
+
+# === ASCII codes ===
+ASCII = np.frombuffer(b"@#S%?*+;:, ", dtype=np.uint8)
+NCH = len(ASCII)
+WEIGHTS = np.array([0.33, 0.33, 0.33], dtype=np.float32)
 
 # === glyph cache ===
 CHAR_CACHE = np.zeros((NCH, CH, CW), dtype=np.uint8)
@@ -176,16 +197,17 @@ def get_video_info(path):
     return fps, total, w, h
 
 def open_ffmpeg_decode(video_path):
-    """ffmpeg encode via GPU"""
-    cmd = [
-        "ffmpeg",
-        "-hwaccel", "cuda",
+    cmd = ["ffmpeg"]
+    if CUDA_AVAILABLE:
+        cmd += ["-hwaccel", "cuda"]
+    else:
+        cmd += ["-hwaccel", "auto"]
+    cmd += [
         "-i", video_path,
         "-pix_fmt", "rgb24",
         "-f", "rawvideo",
         "-"
     ]
-
     return subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -194,13 +216,10 @@ def open_ffmpeg_decode(video_path):
     )
 
 def open_ffmpeg_encode(video_path, output_path, ow, oh, fps, use_gpu):
-    """ffmpeg encode"""
     if use_gpu:
-        vcodec = "h264_nvenc"
-        extra = ["-preset", "p5", "-b:v", "5M"]
+        vcodec = "h264_nvenc" 
     else:
         vcodec = "libx264"
-        extra = []
 
     cmd = [
         "ffmpeg",
@@ -215,7 +234,6 @@ def open_ffmpeg_encode(video_path, output_path, ow, oh, fps, use_gpu):
         "-map", "0:v",
         "-map", "1:a?",
         "-c:v", vcodec,
-        *extra,
         "-pix_fmt", "yuv420p",
         "-shortest",
         output_path,
