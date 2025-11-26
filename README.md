@@ -13,7 +13,7 @@ python ascii_art.py <image_path> [width] [--invert] [--out output.txt]
 
 ## Video transfer
 ```bash
-python ascii_to_mp4.py <input.mp4> <output.mp4> [width] [--invert] [--no-cuda]
+python ascii_to_mp4.py <input.mp4> <output.mp4> [width] [--invert]
 ```
 
 | Parameter      | Description                        |
@@ -22,7 +22,6 @@ python ascii_to_mp4.py <input.mp4> <output.mp4> [width] [--invert] [--no-cuda]
 | `<output.mp4>` | Name of the output video file      |
 | `[width]`      | Output ASCII width (default: `80`) |
 | `--invert`     | Invert brightness (light ↔ dark)   |
-| `--no-cuda`    | Convert without CUDA (If CUDA not available, automatically use CPU converter)              |
 
 
 > You can modify WEIGHTS to adjust colors weighting.
