@@ -261,34 +261,49 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
 
     def decode_thread():
         cap = cv2.VideoCapture(video_path)
+        fid = 0
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            decode_q.put(frame)
+            decode_q.put((fid, frame))
+            fid += 1
         decode_q.put(stop_signal)
         cap.release()
 
     def worker_thread():
         while True:
-            frame = decode_q.get()
-            if frame is stop_signal:
+            item = decode_q.get()
+            if item is stop_signal:
                 decode_q.put(stop_signal)
                 encode_q.put(stop_signal)
                 return
+
+            fid, frame = item
             idx = frame_to_ascii_cpu(frame, ascii_w, ascii_h, invert)
             out_img = ascii_to_image_cpu(idx)
-            encode_q.put(out_img)
-
+            encode_q.put((fid, out_img))
+    
     def encode_thread():
         proc = open_ffmpeg_encode(video_path, output_path, ow, oh, fps)
+        next_id = 0
+        buffer = {}
+
         while True:
-            img = encode_q.get()
-            if img is stop_signal:
+            item = encode_q.get()
+            if item is stop_signal:
                 break
-            proc.stdin.write(img.tobytes())
-            pbar.update(1)
+
+            fid, img = item
+            buffer[fid] = img
+
+            while next_id in buffer:
+                proc.stdin.write(buffer[next_id].tobytes())
+                del buffer[next_id]
+                next_id += 1
+                pbar.update(1)
+
         proc.stdin.close()
         proc.wait()
 
