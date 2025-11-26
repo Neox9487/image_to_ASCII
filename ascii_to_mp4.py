@@ -93,34 +93,56 @@ if NUMBA_AVAILABLE:
         for i in prange(h):
             base_y = i * ch
             for j in range(w):
-                t = char_cache[idx[i, j]]
+                tile = char_cache[idx[i, j]]
                 base_x = j * cw
 
                 for yy in range(ch4):
-                    sy = yy * 4
-                    dy = base_y + sy
+                    y0 = yy * 4
+                    dy0 = base_y + y0
+                    dy1 = dy0 + 1
+                    dy2 = dy0 + 2
+                    dy3 = dy0 + 3
+
                     for xx in range(cw4):
-                        sx = xx * 4
-                        dx = base_x + sx
-                        v = t[sy:sy+4, sx:sx+4].reshape(16)
-                        out[dy,     dx:dx+4] = v[0:4]
-                        out[dy+1,   dx:dx+4] = v[4:8]
-                        out[dy+2,   dx:dx+4] = v[8:12]
-                        out[dy+3,   dx:dx+4] = v[12:16]
+                        x0 = xx * 4
+                        dx0 = base_x + x0
+
+                        out[dy0, dx0]     = tile[y0,     x0]
+                        out[dy0, dx0 + 1] = tile[y0,     x0 + 1]
+                        out[dy0, dx0 + 2] = tile[y0,     x0 + 2]
+                        out[dy0, dx0 + 3] = tile[y0,     x0 + 3]
+
+                        out[dy1, dx0]     = tile[y0 + 1, x0]
+                        out[dy1, dx0 + 1] = tile[y0 + 1, x0 + 1]
+                        out[dy1, dx0 + 2] = tile[y0 + 1, x0 + 2]
+                        out[dy1, dx0 + 3] = tile[y0 + 1, x0 + 3]
+
+                        out[dy2, dx0]     = tile[y0 + 2, x0]
+                        out[dy2, dx0 + 1] = tile[y0 + 2, x0 + 1]
+                        out[dy2, dx0 + 2] = tile[y0 + 2, x0 + 2]
+                        out[dy2, dx0 + 3] = tile[y0 + 2, x0 + 3]
+
+                        out[dy3, dx0]     = tile[y0 + 3, x0]
+                        out[dy3, dx0 + 1] = tile[y0 + 3, x0 + 1]
+                        out[dy3, dx0 + 2] = tile[y0 + 3, x0 + 2]
+                        out[dy3, dx0 + 3] = tile[y0 + 3, x0 + 3]
 
                 if cw_rem != 0:
-                    sx = cw4 * 4
+                    x0 = cw4 * 4
                     for yy in range(ch):
                         dy = base_y + yy
-                        out[dy, base_x+sx:base_x+cw] = t[yy, sx:cw]
+                        for k in range(cw_rem):
+                            out[dy, base_x + x0 + k] = tile[yy, x0 + k]
 
                 if ch_rem != 0:
-                    sy = ch4 * 4
-                    for xx in range(cw):
-                        dx = base_x + xx
-                        for k in range(ch_rem):
-                            out[base_y+sy+k, dx] = t[sy+k, xx]
+                    y0 = ch4 * 4
+                    for k in range(ch_rem):
+                        dy = base_y + y0 + k
+                        for xx in range(cw):
+                            out[dy, base_x + xx] = tile[y0 + k, xx]
+
         return out
+
 
     @njit(parallel=True, fastmath=True)
     def resize_nearest_numba(img, new_h, new_w):
