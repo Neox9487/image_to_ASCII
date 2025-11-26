@@ -1,6 +1,5 @@
 Pillow
 opencv-python
 numpy
+numba
 tqdm
-# for cuda
-cupy-cuda12x

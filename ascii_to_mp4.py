@@ -6,41 +6,20 @@ import subprocess
 import platform
 from PIL import ImageFont, Image, ImageDraw
 from tqdm import tqdm
+import queue
+import threading
 
-# === Detect OS ===
+try:
+    from numba import njit, prange
+    NUMBA_AVAILABLE = True
+    print("Numba available: True")
+except Exception:
+    NUMBA_AVAILABLE = False
+    print("Numba available: False")
+
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
 
-# === CUDA ===
-CUDA_AVAILABLE = False
-CUDA_LOGGING = ""
-cp = None
-FORCE_CPU = False
-
-try:
-    import cupy as _cp
-    from cupyx.scipy.ndimage import zoom
-except Exception as e:
-    CUDA_LOGGING = f"cupy import failed: {e}"
-    CUDA_AVAILABLE = False
-else:
-    try:
-        if _cp.is_available():
-            cp = _cp
-            CUDA_AVAILABLE = True
-        else:
-            CUDA_LOGGING = "cupy imported but CUDA backend not available"
-            CUDA_AVAILABLE = False
-    except Exception as e:
-        CUDA_LOGGING = f"cupy CUDA check failed: {e}"
-        CUDA_AVAILABLE = False
-
-print("CUDA available:", CUDA_AVAILABLE)
-if not CUDA_AVAILABLE:
-    print("Fallback to CPU:", CUDA_LOGGING)
-
-
-# === Monospace font search ===
 def find_mono_font():
     linux_fonts = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -48,21 +27,18 @@ def find_mono_font():
         "/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf",
     ]
     win_fonts = [
-        "C:/Windows/Fonts/consola.ttf", 
-        "C:/Windows/Fonts/lucon.ttf",  
+        "C:/Windows/Fonts/consola.ttf",
+        "C:/Windows/Fonts/lucon.ttf",
         "C:/Windows/Fonts/cour.ttf",
     ]
-
     if IS_LINUX:
         for f in linux_fonts:
             if os.path.exists(f):
                 return f
-
     if IS_WINDOWS:
         for f in win_fonts:
             if os.path.exists(f):
                 return f
-
     print("No monospace font found.")
     sys.exit(1)
 
@@ -72,12 +48,10 @@ asc, desc = FONT.getmetrics()
 CH = asc + desc
 CW = int(FONT.getlength("A"))
 
-# === ASCII codes ===
 ASCII = np.frombuffer(b"@#S%?*+;:, ", dtype=np.uint8)
 NCH = len(ASCII)
-WEIGHTS = np.array([0.33, 0.33, 0.33], dtype=np.float32)
+LUT_LUM_TO_ASCII = np.floor(np.arange(256) * (NCH - 1) / 255).astype(np.uint8)
 
-# === glyph cache ===
 CHAR_CACHE = np.zeros((NCH, CH, CW), dtype=np.uint8)
 for i, ch in enumerate(ASCII):
     img = Image.new("L", (CW, CH), 0)
@@ -85,107 +59,118 @@ for i, ch in enumerate(ASCII):
     d.text((0, 0), chr(ch), font=FONT, fill=255)
     CHAR_CACHE[i] = np.array(img, dtype=np.uint8)
 
-CHAR_CACHE_GPU = None
-WEIGHTS_GPU = None
+if NUMBA_AVAILABLE:
 
-def ensure_gpu():
-    global CHAR_CACHE_GPU, WEIGHTS_GPU
-    if CHAR_CACHE_GPU is None:
-        CHAR_CACHE_GPU = cp.asarray(CHAR_CACHE)
-    if WEIGHTS_GPU is None:
-        WEIGHTS_GPU = cp.asarray(WEIGHTS)
+    @njit(parallel=True, fastmath=True)
+    def rgb_to_ascii_idx_numba(small, invert, lut):
+        h, w, _ = small.shape
+        out = np.empty((h, w), np.uint8)
+        for i in prange(h):
+            for j in range(w):
+                r = small[i, j, 0]
+                g = small[i, j, 1]
+                b = small[i, j, 2]
+                lum = (r * 77 + g * 150 + b * 29) >> 8
+                if invert:
+                    lum = 255 - lum
+                out[i, j] = lut[lum]
+        return out
 
-# === GPU resize kernel ===
-if CUDA_AVAILABLE:
-    resize_kernel = cp.ElementwiseKernel(
-        "raw uint8 src, int32 sw, int32 sh, int32 tw, int32 th",
-        "uint8 dst",
-        r"""
-        // cpp
-        int x = i % tw;  
-        int y = i / tw;   
+    @njit(parallel=True, fastmath=True)
+    def ascii_to_gray_numba(idx, char_cache):
+        h, w = idx.shape
+        ch = char_cache.shape[1]
+        cw = char_cache.shape[2]
+        out_h = h * ch
+        out_w = w * cw
+        out = np.empty((out_h, out_w), np.uint8)
 
-        float gx = (float)x * (float)sw / (float)tw;
-        float gy = (float)y * (float)sh / (float)th;
+        ch4 = ch >> 2
+        cw4 = cw >> 2
+        ch_rem = ch & 3
+        cw_rem = cw & 3
 
-        int ix = (int)gx;
-        int iy = (int)gy;
+        for i in prange(h):
+            base_y = i * ch
+            for j in range(w):
+                t = char_cache[idx[i, j]]
+                base_x = j * cw
 
-        if (ix < 0) ix = 0;
-        if (iy < 0) iy = 0;
-        if (ix >= sw) ix = sw - 1;
-        if (iy >= sh) iy = sh - 1;
+                for yy in range(ch4):
+                    sy = yy * 4
+                    dy = base_y + sy
+                    for xx in range(cw4):
+                        sx = xx * 4
+                        dx = base_x + sx
+                        v = t[sy:sy+4, sx:sx+4].reshape(16)
+                        out[dy,     dx:dx+4] = v[0:4]
+                        out[dy+1,   dx:dx+4] = v[4:8]
+                        out[dy+2,   dx:dx+4] = v[8:12]
+                        out[dy+3,   dx:dx+4] = v[12:16]
 
-        dst = src[iy * sw + ix];
-        """,
-        "gpu_resize"
-    )
+                if cw_rem != 0:
+                    sx = cw4 * 4
+                    for yy in range(ch):
+                        dy = base_y + yy
+                        out[dy, base_x+sx:base_x+cw] = t[yy, sx:cw]
 
-def gpu_resize_img(img, tw, th):
-    h, w = img.shape[:2]
-    g = cp.asarray(img, dtype=cp.uint8)
-    zx = th / h
-    zy = tw / w
-    out = zoom(g, (zx, zy, 1), order=1)
-    return out.astype(cp.uint8)
+                if ch_rem != 0:
+                    sy = ch4 * 4
+                    for xx in range(cw):
+                        dx = base_x + xx
+                        for k in range(ch_rem):
+                            out[base_y+sy+k, dx] = t[sy+k, xx]
+        return out
 
+    @njit(parallel=True, fastmath=True)
+    def resize_nearest_numba(img, new_h, new_w):
+        h, w, c = img.shape
+        out = np.empty((new_h, new_w, c), dtype=np.uint8)
+        r_h = h / new_h
+        r_w = w / new_w
+        for i in prange(new_h):
+            for j in range(new_w):
+                y = int(i * r_h)
+                x = int(j * r_w)
+                out[i, j] = img[y, x]
+        return out
 
-def frame_to_ascii_cpu(frame, ascii_width, invert):
-    """convert frame to ASCII via CPU"""
-    H, W, _ = frame.shape
-    aspect = H / W
-    ascii_height = int(ascii_width * aspect * (CW / CH))
+    _dummy = np.zeros((10, 10, 3), dtype=np.uint8)
+    rgb_to_ascii_idx_numba(_dummy, False, LUT_LUM_TO_ASCII)
+    _dummy_idx = np.zeros((10, 10), dtype=np.uint8)
+    ascii_to_gray_numba(_dummy_idx, CHAR_CACHE)
+    resize_nearest_numba(_dummy, 5, 5)
 
-    
-    small = cv2.resize(frame, (ascii_width, ascii_height))
+else:
 
-    lum = (small.astype(np.float32) * WEIGHTS).sum(axis=2)
+    def resize_nearest_numba(img, new_h, new_w):
+        return cv2.resize(img, (new_w, new_h))
+
+def rgb_to_ascii_np(small, invert):
+    lum = (small[:, :, 0] * 77 + small[:, :, 1] * 150 + small[:, :, 2] * 29) >> 8
     if invert:
         lum = 255 - lum
-    idx = (lum * (NCH - 1) / 255).astype(np.int32)
-    return idx
+    return LUT_LUM_TO_ASCII[lum]
 
-def frame_to_ascii_gpu(frame, ascii_width, invert):
-    """convert frame to ASCII via GPU"""
-    H, W, _ = frame.shape
-    aspect = H / W
-    ascii_height = int(ascii_width * aspect * (CW / CH))
-
-    ensure_gpu()
-    g = cp.asarray(frame, dtype=cp.uint8)
-    r = gpu_resize_img(g, ascii_width, ascii_height).astype(cp.float32)
-
-    gray = 0.299 * r[:, :, 0] + 0.587 * r[:, :, 1] + 0.114 * r[:, :, 2]
-
-    if invert:
-        gray = 255 - gray
-
-    idx = (gray * (NCH - 1) / 255.0).astype(cp.int32)
-    idx = cp.clip(idx, 0, NCH - 1)
-
-    return idx
+def frame_to_ascii_cpu(frame, ascii_w, ascii_h, invert=False):
+    small = resize_nearest_numba(frame, ascii_h, ascii_w)
+    if NUMBA_AVAILABLE:
+        return rgb_to_ascii_idx_numba(small, invert, LUT_LUM_TO_ASCII)
+    return rgb_to_ascii_np(small, invert)
 
 def ascii_to_image_cpu(idx):
-    """convert ASCII to image via CPU"""
+    if NUMBA_AVAILABLE:
+        gray = ascii_to_gray_numba(idx, CHAR_CACHE)
+        return np.stack([gray, gray, gray], axis=2).astype(np.uint8)
     h, w = idx.shape
-    tiles = CHAR_CACHE[idx]
-    tiles = tiles.transpose(0, 2, 1, 3)
-    gray = tiles.reshape(h * CH, w * CW)
-    rgb = np.stack([gray, gray, gray], axis=2).astype(np.uint8)
-    return rgb
-
-def ascii_to_image_gpu(idx):
-    """convert ascii to image via GPU"""
-    ensure_gpu()
-    h, w = idx.shape
-    tiles = CHAR_CACHE_GPU[idx]
-    tiles = tiles.transpose(0, 2, 1, 3)
-    gray = tiles.reshape(h * CH, w * CW)
-    rgb = cp.stack([gray, gray, gray], axis=2).astype(cp.uint8)
-    return rgb
+    out = np.zeros((h * CH, w * CW), dtype=np.uint8)
+    for y in range(h):
+        tile_row = CHAR_CACHE[idx[y]]
+        tile_row = tile_row.transpose(1, 0, 2)
+        out[y * CH:(y + 1) * CH, :] = tile_row.reshape(CH, w * CW)
+    return np.stack([out, out, out], axis=2).astype(np.uint8)
 
 def get_video_info(path):
-    """video info"""
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         return 30.0, 0, 0, 0
@@ -196,44 +181,34 @@ def get_video_info(path):
     cap.release()
     return fps, total, w, h
 
-def open_ffmpeg_decode(video_path):
-    cmd = ["ffmpeg"]
-    if CUDA_AVAILABLE:
-        cmd += ["-hwaccel", "cuda"]
-    else:
-        cmd += ["-hwaccel", "auto"]
-    cmd += [
-        "-i", video_path,
-        "-pix_fmt", "rgb24",
-        "-f", "rawvideo",
-        "-"
-    ]
-    return subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        bufsize=10**8
-    )
+def compute_ascii_dims(vw, vh, ascii_width):
+    aspect = vh / vw
+    ascii_height = int(ascii_width * aspect * (CW / CH))
+    if ascii_height <= 0:
+        ascii_height = 1
+    out_w = ascii_width * CW
+    out_h = ascii_height * CH
+    if out_w % 2 != 0:
+        out_w += CW
+        ascii_width += 1
+    if out_h % 2 != 0:
+        out_h += CH
+        ascii_height += 1
+    return ascii_width, ascii_height, out_w, out_h
 
-def open_ffmpeg_encode(video_path, output_path, ow, oh, fps, use_gpu):
-    if use_gpu:
-        vcodec = "h264_nvenc" 
-    else:
-        vcodec = "libx264"
-
+def open_ffmpeg_encode(video_path, output_path, ow, oh, fps):
     cmd = [
         "ffmpeg",
         "-y",
         "-f", "rawvideo",
         "-pix_fmt", "rgb24",
-        "-thread_queue_size", "4096",
         "-s", f"{ow}x{oh}",
         "-r", str(fps),
         "-i", "-",
         "-i", video_path,
         "-map", "0:v",
         "-map", "1:a?",
-        "-c:v", vcodec,
+        "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-shortest",
         output_path,
@@ -247,119 +222,84 @@ def open_ffmpeg_encode(video_path, output_path, ow, oh, fps, use_gpu):
     )
 
 def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
-    """main pipeline"""
-    global FORCE_CPU
-
     fps, total, vw, vh = get_video_info(video_path)
     if vw == 0 or vh == 0:
-        print("Failed to read video info:", video_path)
+        print("Failed to read video:", video_path)
         return
 
-    use_gpu = CUDA_AVAILABLE and not FORCE_CPU
+    ascii_w, ascii_h, ow, oh = compute_ascii_dims(vw, vh, ascii_width)
 
-    print("Mode:", "GPU" if use_gpu else "CPU")
-    print("Video size =", vw, "x", vh)
-    print("FPS =", fps, "Frames =", total)
+    print("Mode:", "Multithread CPU + Numba" if NUMBA_AVAILABLE else "Multithread CPU")
+    print("Frames:", total)
+    print("ASCII grid:", ascii_w, "x", ascii_h)
 
-    if use_gpu:
-        proc_in = open_ffmpeg_decode(video_path)
-        raw = proc_in.stdout.read(vw * vh * 3)
-        if len(raw) < vw * vh * 3:
-            print("Failed first frame.")
-            proc_in.terminate()
-            return
-        frame = np.frombuffer(raw, dtype=np.uint8).reshape((vh, vw, 3))
-        idx0 = frame_to_ascii_gpu(frame, ascii_width, invert)
-        out0 = ascii_to_image_gpu(idx0).get()
-    else:
+    decode_q = queue.Queue(maxsize=16)
+    encode_q = queue.Queue(maxsize=16)
+    stop_signal = object()
+
+    def decode_thread():
         cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            print("Failed to open video:", video_path)
-            return
-        ret, frame = cap.read()
-        if not ret:
-            print("Failed first frame.")
-            cap.release()
-            return
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        idx0 = frame_to_ascii_cpu(frame, ascii_width, invert)
-        out0 = ascii_to_image_cpu(idx0)
-        cap.release()
-
-    oh, ow, _ = out0.shape
-    print("ASCII frame size =", ow, "x", oh)
-
-    def fix_even(x):
-        return x if x % 2 == 0 else x + 1
-
-    ow2 = fix_even(ow)
-    oh2 = fix_even(oh)
-
-    if ow2 != ow or oh2 != oh:
-        out0 = cv2.resize(out0, (ow2, oh2), interpolation=cv2.INTER_NEAREST)
-        print(f"Adjusted ASCII frame size to {ow2} x {oh2}")
-
-    proc_out = open_ffmpeg_encode(video_path, output_path, ow2, oh2, fps, use_gpu)
-    proc_out.stdin.write(out0.tobytes())
-
-    pbar = tqdm(total=total or None, desc="Rendering ASCII")
-
-    if use_gpu:
-        pbar.update(1)
-        while True:
-            raw = proc_in.stdout.read(vw * vh * 3)
-            if len(raw) < vw * vh * 3:
-                break
-            frame = np.frombuffer(raw, dtype=np.uint8).reshape((vh, vw, 3))
-            idx = frame_to_ascii_gpu(frame, ascii_width, invert)
-            out_img = ascii_to_image_gpu(idx).get()
-            out_img = cv2.resize(out_img, (ow2, oh2), interpolation=cv2.INTER_NEAREST)
-            proc_out.stdin.write(out_img.tobytes())
-            pbar.update(1)
-        proc_in.stdout.close()
-        proc_in.wait()
-    else:
-        cap = cv2.VideoCapture(video_path)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 1)
-        pbar.update(1)
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            idx = frame_to_ascii_cpu(frame, ascii_width, invert)
-            out_img = ascii_to_image_cpu(idx)
-            out_img = cv2.resize(out_img, (ow2, oh2), interpolation=cv2.INTER_NEAREST)
-            proc_out.stdin.write(out_img.tobytes())
-            pbar.update(1)
+            decode_q.put(frame)
+        decode_q.put(stop_signal)
         cap.release()
 
+    def worker_thread():
+        while True:
+            frame = decode_q.get()
+            if frame is stop_signal:
+                decode_q.put(stop_signal)
+                encode_q.put(stop_signal)
+                return
+            idx = frame_to_ascii_cpu(frame, ascii_w, ascii_h, invert)
+            out_img = ascii_to_image_cpu(idx)
+            encode_q.put(out_img)
+
+    def encode_thread():
+        proc = open_ffmpeg_encode(video_path, output_path, ow, oh, fps)
+        while True:
+            img = encode_q.get()
+            if img is stop_signal:
+                break
+            proc.stdin.write(img.tobytes())
+            pbar.update(1)
+        proc.stdin.close()
+        proc.wait()
+
+    NUM_WORKERS = os.cpu_count()
+    pbar = tqdm(total=total, desc="Rendering ASCII")
+
+    threads = []
+    threads.append(threading.Thread(target=decode_thread))
+    for _ in range(NUM_WORKERS):
+        threads.append(threading.Thread(target=worker_thread))
+    threads.append(threading.Thread(target=encode_thread))
+
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
     pbar.close()
-    proc_out.stdin.close()
-    proc_out.wait()
     print("Done:", output_path)
 
-# === Main ===
 def main():
-    global FORCE_CPU
-
     if len(sys.argv) < 3:
-        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--no-cuda]")
+        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert]")
         return
-
     video = sys.argv[1]
     output = sys.argv[2]
     ascii_width = 100
     invert = False
-
     for a in sys.argv[3:]:
         if a.isdigit():
             ascii_width = int(a)
         elif a == "--invert":
             invert = True
-        elif a == "--no-cuda":
-            FORCE_CPU = True
-
     ascii_video_to_mp4(video, output, ascii_width, invert)
 
 if __name__ == "__main__":
