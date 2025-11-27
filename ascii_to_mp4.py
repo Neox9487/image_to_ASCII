@@ -9,7 +9,7 @@ from tqdm import tqdm
 import queue
 import threading
 
-WEIGHTS = [0.33, 0.33, 0.33] # r, g, b weights
+WEIGHTS = [1, 1, 1] # r, g, b weights
 VIBRANCE = 1.0
 GAMMA = 1.0
 
