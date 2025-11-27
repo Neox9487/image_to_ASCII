@@ -216,7 +216,7 @@ if NUMBA_AVAILABLE:
     ascii_to_gray_numba(_dummy_idx, CHAR_CACHE)
     _dummy_rgb = np.zeros((10,10,3),dtype=np.uint8)
     resize_nearest_numba(_dummy, 5, 5)
-    ascii_to_color(_dummy_idx, _dummy_rgb, CHAR_CACHE, WEIGHTS)
+    ascii_to_color(_dummy_idx, _dummy_rgb, CHAR_CACHE, WEIGHTS, VIBRANCE, GAMMA)
 
 else:
 
