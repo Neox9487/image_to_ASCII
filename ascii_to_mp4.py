@@ -269,14 +269,15 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             decode_q.put((fid, frame))
             fid += 1
-        decode_q.put(stop_signal)
         cap.release()
+
+        for _ in range(NUM_WORKERS):
+            decode_q.put(stop_signal)
 
     def worker_thread():
         while True:
             item = decode_q.get()
             if item is stop_signal:
-                decode_q.put(stop_signal)
                 encode_q.put(stop_signal)
                 return
 
@@ -290,10 +291,15 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
         next_id = 0
         buffer = {}
 
+        stop_count = 0
+
         while True:
             item = encode_q.get()
             if item is stop_signal:
-                break
+                stop_count += 1
+                if stop_count == NUM_WORKERS:
+                    break
+                continue
 
             fid, img = item
             buffer[fid] = img
@@ -304,8 +310,15 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
                 next_id += 1
                 pbar.update(1)
 
+        while next_id in buffer:
+            proc.stdin.write(buffer[next_id].tobytes())
+            del buffer[next_id]
+            next_id += 1
+            pbar.update(1)
+
         proc.stdin.close()
         proc.wait()
+
 
     NUM_WORKERS = os.cpu_count()
     pbar = tqdm(total=total, desc="Rendering ASCII")
