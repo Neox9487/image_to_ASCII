@@ -48,9 +48,9 @@ asc, desc = FONT.getmetrics()
 CH = asc + desc
 CW = int(FONT.getlength("A"))
 
-ASCII = np.frombuffer(b"@#S%?*+;:, ", dtype=np.uint8)
+ASCII = np.frombuffer(b" .'`^\",:;Il!i><~+_-?][}{1)(|\\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$", dtype=np.uint8)
 NCH = len(ASCII)
-LUT_LUM_TO_ASCII = np.floor(np.arange(256) * (NCH - 1) / 255).astype(np.uint8)
+LUT_LUM_TO_ASCII = ((np.arange(256) / 255) * (NCH - 1)).astype(np.uint8)
 
 CHAR_CACHE = np.zeros((NCH, CH, CW), dtype=np.uint8)
 for i, ch in enumerate(ASCII):
