@@ -61,7 +61,7 @@ for i, ch in enumerate(ASCII):
 
 if NUMBA_AVAILABLE:
     @njit(parallel=True, fastmath=True)
-    def ascii_to_color_numba(idx, small_rgb, char_cache):
+    def ascii_to_color_optimization(idx, small_rgb, char_cache):
         h, w = idx.shape
         ch = char_cache.shape[1]
         cw = char_cache.shape[2]
@@ -76,16 +76,33 @@ if NUMBA_AVAILABLE:
                 base_x = j * cw
                 char_idx = idx[i, j]
                 tile = char_cache[char_idx]
+
                 r = small_rgb[i, j, 0]
                 g = small_rgb[i, j, 1]
                 b = small_rgb[i, j, 2]
 
+                r2 = (r >> 3) << 3  
+                g2 = (g >> 3) << 3
+                b2 = (b >> 3) << 3
+
                 for yy in range(ch):
                     for xx in range(cw):
-                        v = tile[yy, xx]
-                        out[base_y+yy, base_x+xx, 0] = (v * r) >> 8
-                        out[base_y+yy, base_x+xx, 1] = (v * g) >> 8
-                        out[base_y+yy, base_x+xx, 2] = (v * b) >> 8
+                        v = tile[yy, xx]  
+                        
+                        if v < 85:
+                            scale = 90   
+                        elif v < 170:
+                            scale = 179  
+                        else:
+                            scale = 256  
+
+                        ry = (r2 * scale) >> 8
+                        gy = (g2 * scale) >> 8
+                        by = (b2 * scale) >> 8
+
+                        out[base_y+yy, base_x+xx, 0] = ry
+                        out[base_y+yy, base_x+xx, 1] = gy
+                        out[base_y+yy, base_x+xx, 2] = by
 
         return out
 
@@ -189,8 +206,8 @@ if NUMBA_AVAILABLE:
     _dummy_idx = np.zeros((10, 10), dtype=np.uint8)
     ascii_to_gray_numba(_dummy_idx, CHAR_CACHE)
     _dummy_rgb = np.zeros((10,10,3),dtype=np.uint8)
-    ascii_to_color_numba(_dummy_idx, _dummy_rgb, CHAR_CACHE)
     resize_nearest_numba(_dummy, 5, 5)
+    ascii_to_color_optimization(_dummy_idx, _dummy_rgb, CHAR_CACHE)
 
 else:
 
@@ -214,11 +231,29 @@ def ascii_to_image_color(idx, small_rgb):
         for j in range(w):
             char_idx = idx[i, j]
             tile = CHAR_CACHE[char_idx]
-            color = small_rgb[i, j]
+            r, g, b = small_rgb[i, j]
 
-            tile_rgb = (tile[:, :, None] * color[None, None, :] / 255).astype(np.uint8)
+            r2 = (r >> 3) << 3
+            g2 = (g >> 3) << 3
+            b2 = (b >> 3) << 3
 
-            out[i*CH:(i+1)*CH, j*CW:(j+1)*CW] = tile_rgb
+            for yy in range(CH):
+                for xx in range(CW):
+                    v = tile[yy, xx]
+                    if v < 85:
+                        scale = 90
+                    elif v < 170:
+                        scale = 179
+                    else:
+                        scale = 256
+
+                    ry = (r2 * scale) >> 8
+                    gy = (g2 * scale) >> 8
+                    by = (b2 * scale) >> 8
+
+                    out[i*CH+yy, j*CW+xx, 0] = ry
+                    out[i*CH+yy, j*CW+xx, 1] = gy
+                    out[i*CH+yy, j*CW+xx, 2] = by
 
     return out
 
@@ -337,10 +372,11 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False, c
             else:
                 idx = rgb_to_ascii_np(small_rgb, invert)
 
-            if color and NUMBA_AVAILABLE:
-                out_img = ascii_to_color_numba(idx, small_rgb, CHAR_CACHE)
-            elif color:
-                out_img = ascii_to_image_color(idx, small_rgb) 
+            if color:
+                if NUMBA_AVAILABLE:
+                    out_img = ascii_to_color_optimization(idx, small_rgb, CHAR_CACHE)
+                else:
+                    out_img = ascii_to_image_color(idx, small_rgb)
             else:
                 out_img = ascii_to_image(idx)
 
