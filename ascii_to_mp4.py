@@ -60,6 +60,34 @@ for i, ch in enumerate(ASCII):
     CHAR_CACHE[i] = np.array(img, dtype=np.uint8)
 
 if NUMBA_AVAILABLE:
+    @njit(parallel=True, fastmath=True)
+    def ascii_to_color_numba(idx, small_rgb, char_cache):
+        h, w = idx.shape
+        ch = char_cache.shape[1]
+        cw = char_cache.shape[2]
+
+        out_h = h * ch
+        out_w = w * cw
+        out = np.empty((out_h, out_w, 3), np.uint8)
+
+        for i in prange(h):
+            base_y = i * ch
+            for j in range(w):
+                base_x = j * cw
+                char_idx = idx[i, j]
+                tile = char_cache[char_idx]
+                r = small_rgb[i, j, 0]
+                g = small_rgb[i, j, 1]
+                b = small_rgb[i, j, 2]
+
+                for yy in range(ch):
+                    for xx in range(cw):
+                        v = tile[yy, xx]
+                        out[base_y+yy, base_x+xx, 0] = (v * r) >> 8
+                        out[base_y+yy, base_x+xx, 1] = (v * g) >> 8
+                        out[base_y+yy, base_x+xx, 2] = (v * b) >> 8
+
+        return out
 
     @njit(parallel=True, fastmath=True)
     def rgb_to_ascii_idx_numba(small, invert, lut):
@@ -143,7 +171,6 @@ if NUMBA_AVAILABLE:
 
         return out
 
-
     @njit(parallel=True, fastmath=True)
     def resize_nearest_numba(img, new_h, new_w):
         h, w, c = img.shape
@@ -161,6 +188,8 @@ if NUMBA_AVAILABLE:
     rgb_to_ascii_idx_numba(_dummy, False, LUT_LUM_TO_ASCII)
     _dummy_idx = np.zeros((10, 10), dtype=np.uint8)
     ascii_to_gray_numba(_dummy_idx, CHAR_CACHE)
+    _dummy_rgb = np.zeros((10,10,3),dtype=np.uint8)
+    ascii_to_color_numba(_dummy_idx, _dummy_rgb, CHAR_CACHE)
     resize_nearest_numba(_dummy, 5, 5)
 
 else:
@@ -174,13 +203,32 @@ def rgb_to_ascii_np(small, invert):
         lum = 255 - lum
     return LUT_LUM_TO_ASCII[lum]
 
-def frame_to_ascii_cpu(frame, ascii_w, ascii_h, invert=False):
+def ascii_to_image_color(idx, small_rgb):
+    h, w = idx.shape
+    out_h = h * CH
+    out_w = w * CW
+
+    out = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+
+    for i in range(h):
+        for j in range(w):
+            char_idx = idx[i, j]
+            tile = CHAR_CACHE[char_idx]
+            color = small_rgb[i, j]
+
+            tile_rgb = (tile[:, :, None] * color[None, None, :] / 255).astype(np.uint8)
+
+            out[i*CH:(i+1)*CH, j*CW:(j+1)*CW] = tile_rgb
+
+    return out
+
+def frame_to_ascii(frame, ascii_w, ascii_h, invert=False):
     small = resize_nearest_numba(frame, ascii_h, ascii_w)
     if NUMBA_AVAILABLE:
         return rgb_to_ascii_idx_numba(small, invert, LUT_LUM_TO_ASCII)
     return rgb_to_ascii_np(small, invert)
 
-def ascii_to_image_cpu(idx):
+def ascii_to_image(idx):
     if NUMBA_AVAILABLE:
         gray = ascii_to_gray_numba(idx, CHAR_CACHE)
         return np.stack([gray, gray, gray], axis=2).astype(np.uint8)
@@ -243,7 +291,7 @@ def open_ffmpeg_encode(video_path, output_path, ow, oh, fps):
         bufsize=10**8
     )
 
-def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
+def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False, color = False):
     fps, total, vw, vh = get_video_info(video_path)
     if vw == 0 or vh == 0:
         print("Failed to read video:", video_path)
@@ -280,10 +328,22 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
             if item is stop_signal:
                 encode_q.put(stop_signal)
                 return
-
+            
             fid, frame = item
-            idx = frame_to_ascii_cpu(frame, ascii_w, ascii_h, invert)
-            out_img = ascii_to_image_cpu(idx)
+            small_rgb = resize_nearest_numba(frame, ascii_h, ascii_w)
+
+            if NUMBA_AVAILABLE:
+                idx = rgb_to_ascii_idx_numba(small_rgb, invert, LUT_LUM_TO_ASCII)
+            else:
+                idx = rgb_to_ascii_np(small_rgb, invert)
+
+            if color and NUMBA_AVAILABLE:
+                out_img = ascii_to_color_numba(idx, small_rgb, CHAR_CACHE)
+            elif color:
+                out_img = ascii_to_image_color(idx, small_rgb) 
+            else:
+                out_img = ascii_to_image(idx)
+
             encode_q.put((fid, out_img))
     
     def encode_thread():
@@ -339,18 +399,21 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert]")
+        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--color]")
         return
     video = sys.argv[1]
     output = sys.argv[2]
     ascii_width = 100
     invert = False
+    color = False
     for a in sys.argv[3:]:
         if a.isdigit():
             ascii_width = int(a)
         elif a == "--invert":
             invert = True
-    ascii_video_to_mp4(video, output, ascii_width, invert)
+        elif a == "--color":
+            color = True
+    ascii_video_to_mp4(video, output, ascii_width, invert, color)
 
 if __name__ == "__main__":
     main()
