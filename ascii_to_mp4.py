@@ -9,6 +9,10 @@ from tqdm import tqdm
 import queue
 import threading
 
+WEIGHTS = [0.33, 0.33, 0.33] # r, g, b weights
+VIBRANCE = 1.0
+GAMMA = 1.0
+
 try:
     from numba import njit, prange
     NUMBA_AVAILABLE = True
@@ -61,7 +65,7 @@ for i, ch in enumerate(ASCII):
 
 if NUMBA_AVAILABLE:
     @njit(parallel=True, fastmath=True)
-    def ascii_to_color_optimization(idx, small_rgb, char_cache):
+    def ascii_to_color(idx, small_rgb, char_cache, weights, vibrance, gamma):
         h, w = idx.shape
         ch = char_cache.shape[1]
         cw = char_cache.shape[2]
@@ -70,39 +74,44 @@ if NUMBA_AVAILABLE:
         out_w = w * cw
         out = np.empty((out_h, out_w, 3), np.uint8)
 
+        wr, wg, wb = weights[0], weights[1], weights[2]
+
         for i in prange(h):
             base_y = i * ch
             for j in range(w):
                 base_x = j * cw
-                char_idx = idx[i, j]
-                tile = char_cache[char_idx]
+                tile = char_cache[idx[i, j]]
 
-                r = small_rgb[i, j, 0]
-                g = small_rgb[i, j, 1]
-                b = small_rgb[i, j, 2]
+                r = small_rgb[i, j, 0] * wr
+                g = small_rgb[i, j, 1] * wg
+                b = small_rgb[i, j, 2] * wb
 
-                r2 = (r >> 3) << 3  
-                g2 = (g >> 3) << 3
-                b2 = (b >> 3) << 3
+                r *= vibrance
+                g *= vibrance
+                b *= vibrance
+
+                r = 255 * ((r / 255) ** gamma)
+                g = 255 * ((g / 255) ** gamma)
+                b = 255 * ((b / 255) ** gamma)
+
+                r2 = (int(r) >> 3) << 3
+                g2 = (int(g) >> 3) << 3
+                b2 = (int(b) >> 3) << 3
 
                 for yy in range(ch):
                     for xx in range(cw):
-                        v = tile[yy, xx]  
-                        
+                        v = tile[yy, xx]
+
                         if v < 85:
-                            scale = 90   
+                            scale = 90
                         elif v < 170:
-                            scale = 179  
+                            scale = 179
                         else:
-                            scale = 256  
+                            scale = 256
 
-                        ry = (r2 * scale) >> 8
-                        gy = (g2 * scale) >> 8
-                        by = (b2 * scale) >> 8
-
-                        out[base_y+yy, base_x+xx, 0] = ry
-                        out[base_y+yy, base_x+xx, 1] = gy
-                        out[base_y+yy, base_x+xx, 2] = by
+                        out[base_y+yy, base_x+xx, 0] = (r2 * scale) >> 8
+                        out[base_y+yy, base_x+xx, 1] = (g2 * scale) >> 8
+                        out[base_y+yy, base_x+xx, 2] = (b2 * scale) >> 8
 
         return out
 
@@ -207,7 +216,7 @@ if NUMBA_AVAILABLE:
     ascii_to_gray_numba(_dummy_idx, CHAR_CACHE)
     _dummy_rgb = np.zeros((10,10,3),dtype=np.uint8)
     resize_nearest_numba(_dummy, 5, 5)
-    ascii_to_color_optimization(_dummy_idx, _dummy_rgb, CHAR_CACHE)
+    ascii_to_color(_dummy_idx, _dummy_rgb, CHAR_CACHE, WEIGHTS)
 
 else:
 
@@ -220,40 +229,45 @@ def rgb_to_ascii_np(small, invert):
         lum = 255 - lum
     return LUT_LUM_TO_ASCII[lum]
 
-def ascii_to_image_color(idx, small_rgb):
+def ascii_to_image_color(idx, small_rgb, vibrance, gamma):
     h, w = idx.shape
     out_h = h * CH
     out_w = w * CW
 
     out = np.zeros((out_h, out_w, 3), dtype=np.uint8)
 
+    wr, wg, wb = WEIGHTS
+
     for i in range(h):
         for j in range(w):
-            char_idx = idx[i, j]
-            tile = CHAR_CACHE[char_idx]
+            tile = CHAR_CACHE[idx[i, j]]
+
             r, g, b = small_rgb[i, j]
 
-            r2 = (r >> 3) << 3
-            g2 = (g >> 3) << 3
-            b2 = (b >> 3) << 3
+            r *= wr
+            g *= wg
+            b *= wb
+
+            r *= vibrance
+            g *= vibrance
+            b *= vibrance
+
+            r = 255 * ((r / 255) ** gamma)
+            g = 255 * ((g / 255) ** gamma)
+            b = 255 * ((b / 255) ** gamma)
+
+            r2 = (int(r) >> 3) << 3
+            g2 = (int(g) >> 3) << 3
+            b2 = (int(b) >> 3) << 3
 
             for yy in range(CH):
                 for xx in range(CW):
                     v = tile[yy, xx]
-                    if v < 85:
-                        scale = 90
-                    elif v < 170:
-                        scale = 179
-                    else:
-                        scale = 256
+                    scale = 90 if v < 85 else 179 if v < 170 else 256
 
-                    ry = (r2 * scale) >> 8
-                    gy = (g2 * scale) >> 8
-                    by = (b2 * scale) >> 8
-
-                    out[i*CH+yy, j*CW+xx, 0] = ry
-                    out[i*CH+yy, j*CW+xx, 1] = gy
-                    out[i*CH+yy, j*CW+xx, 2] = by
+                    out[i*CH+yy, j*CW+xx, 0] = (r2 * scale) >> 8
+                    out[i*CH+yy, j*CW+xx, 1] = (g2 * scale) >> 8
+                    out[i*CH+yy, j*CW+xx, 2] = (b2 * scale) >> 8
 
     return out
 
@@ -363,7 +377,7 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False, c
             if item is stop_signal:
                 encode_q.put(stop_signal)
                 return
-            
+
             fid, frame = item
             small_rgb = resize_nearest_numba(frame, ascii_h, ascii_w)
 
@@ -374,11 +388,12 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False, c
 
             if color:
                 if NUMBA_AVAILABLE:
-                    out_img = ascii_to_color_optimization(idx, small_rgb, CHAR_CACHE)
+                    out_img = ascii_to_color(idx, small_rgb, CHAR_CACHE, WEIGHTS, VIBRANCE, GAMMA)
                 else:
-                    out_img = ascii_to_image_color(idx, small_rgb)
+                    out_img = ascii_to_image_color(idx, small_rgb, VIBRANCE, GAMMA)
             else:
                 out_img = ascii_to_image(idx)
+
 
             encode_q.put((fid, out_img))
     
@@ -434,21 +449,37 @@ def ascii_video_to_mp4(video_path, output_path, ascii_width=100, invert=False, c
     print("Done:", output_path)
 
 def main():
+    global VIBRANCE, GAMMA
+
     if len(sys.argv) < 3:
-        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--color]")
+        print("Usage: python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--color] [--vibrance value] [--gamma value]")
         return
+
     video = sys.argv[1]
     output = sys.argv[2]
+
     ascii_width = 100
     invert = False
     color = False
-    for a in sys.argv[3:]:
+
+    args = sys.argv[3:]
+    i = 0
+    while i < len(args):
+        a = args[i]
         if a.isdigit():
             ascii_width = int(a)
         elif a == "--invert":
             invert = True
         elif a == "--color":
             color = True
+        elif a == "--vibrance":
+            VIBRANCE = float(args[i+1])
+            i += 1
+        elif a == "--gamma":
+            GAMMA = float(args[i+1])
+            i += 1
+        i += 1
+
     ascii_video_to_mp4(video, output, ascii_width, invert, color)
 
 if __name__ == "__main__":
