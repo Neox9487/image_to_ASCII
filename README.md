@@ -27,3 +27,4 @@ python ascii_to_mp4.py input.mp4 output.mp4 [width] [--invert] [--color] [--vibr
 | `--gamma`      | Adjust color contrast/brightness curve (default: 1.0) |
 
 > You can modify WEIGHTS to adjust colors weighting.
+> The Weights in ascii_art.py and ascii_to_mp4.py have different meanings.
